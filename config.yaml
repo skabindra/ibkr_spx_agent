@@ -1,0 +1,74 @@
+# IBKR SPX Paper-Trading Agent Configuration
+# For paper trading and backtest reference only. NOT for live trading.
+
+underlying: SPX
+timezone: America/New_York
+
+# Entry/exit time windows
+entry_time: "09:45"
+exit_time: "09:45"
+entry_offset_minutes: 2
+exit_offset_minutes: 2
+trade_day: Friday  # Monday, Tuesday, Wednesday, Thursday, Friday
+
+# Portfolio and risk
+allocate_pct: 0.05
+profit_target_pct: 0.20
+require_two_price_confirmation: true
+opening_fees: 1.8
+closing_fees: 1.8
+
+# Strategy precision
+use_exact_dte: true
+use_exact_strike_offsets: true
+use_blackout_days: true
+
+# PnL monitoring
+pnl_poll_interval_seconds: 30
+
+# Leg definitions (4-leg structure)
+short_put:
+  side: SELL
+  qty: 1
+  option_type: PUT
+  delta_target: 20
+  dte: 6
+
+long_put:
+  side: BUY
+  qty: 1
+  option_type: PUT
+  strike_offset: 0
+  dte: 7
+
+short_call:
+  side: SELL
+  qty: 1
+  option_type: CALL
+  delta_target: 20
+  dte: 6
+
+long_call:
+  side: BUY
+  qty: 1
+  option_type: CALL
+  strike_offset: 0
+  dte: 7
+
+# Blackout dates (manual list; skip trading on these days)
+# Format: YYYY-MM-DD. Future: macro-event blackout support can be added.
+blackout_dates:
+  - "2024-01-15"   # MLK Day observed
+  - "2024-02-19"   # Presidents Day
+  - "2024-07-04"   # Independence Day
+  - "2024-11-29"   # Day after Thanksgiving
+  - "2025-01-20"   # MLK Day
+  - "2025-02-17"   # Presidents Day
+
+# Risk limits
+max_open_positions: 1
+kill_switch_enabled: false
+max_daily_loss_pct: null  # Placeholder for future
+
+# Broker (override via .env)
+# host, port, client_id, account come from environment

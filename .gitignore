@@ -1,0 +1,24 @@
+# Environment and secrets
+.env
+venv/
+.venv/
+env/
+
+# State and logs (local runtime)
+state.json
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
