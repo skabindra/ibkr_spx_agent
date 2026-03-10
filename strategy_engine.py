@@ -168,11 +168,31 @@ class StrategyEngine:
                 self._log("IB not connected; skipping entry")
                 return
             expirations = self.ib_client.get_spx_expirations()
+            if not expirations:
+                self._log("Contract selection failed: no SPX expirations from broker")
+                return
+            exp6 = (trade_date + timedelta(days=self.config.get("short_put", {}).get("dte", 6))).strftime("%Y%m%d")
+            exp7 = (trade_date + timedelta(days=self.config.get("long_put", {}).get("dte", 7))).strftime("%Y%m%d")
+            if exp6 not in [ex.replace("-", "")[:8] for ex in expirations]:
+                self._log("Contract selection failed: no 6-DTE expiry %s in broker list (SPX may not list that date)", exp6)
+                return
+            if exp7 not in [ex.replace("-", "")[:8] for ex in expirations]:
+                self._log("Contract selection failed: no 7-DTE expiry %s in broker list (SPX may not list that date)", exp7)
+                return
             chain_by_expiry, spot = self._get_chain_from_broker(trade_date, expirations)
+            needed = {(trade_date + timedelta(days=self.config.get("short_put", {}).get("dte", 6))).strftime("%Y%m%d"),
+                     (trade_date + timedelta(days=self.config.get("long_put", {}).get("dte", 7))).strftime("%Y%m%d")}
+            for exp in needed:
+                n = len(chain_by_expiry.get(exp.replace("-", "")[:8], []))
+                self._log("Chain for expiry %s: %d contracts", exp, n)
+            if spot <= 0:
+                self._log("Contract selection failed: no SPX spot price")
+                return
 
         sp, lp, sc, lc = self.selector.select_legs(trade_date, spot, expirations, chain_by_expiry)
         if not all([sp, lp, sc, lc]):
-            self._log("Contract selection failed; aborting entry")
+            self._log("Contract selection failed; aborting entry (short_put=%s long_put=%s short_call=%s long_call=%s)",
+                     sp is not None, lp is not None, sc is not None, lc is not None)
             return
 
         # Position size: 5% of portfolio, default 1 lot

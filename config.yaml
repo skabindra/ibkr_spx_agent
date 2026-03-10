@@ -2,11 +2,11 @@
 # For paper trading and backtest reference only. NOT for live trading.
 
 underlying: SPX
-timezone: America/New_York
+timezone: America/Chicago
 
-# Entry/exit time windows
-entry_time: "09:20"
-exit_time: "09:20"
+# Entry/exit time windows (11:05 = 11:05 AM CT)
+entry_time: "11:05"
+exit_time: "11:05"
 entry_offset_minutes: 2
 exit_offset_minutes: 2
 trade_day: Friday  # Monday, Tuesday, Wednesday, Thursday, Friday

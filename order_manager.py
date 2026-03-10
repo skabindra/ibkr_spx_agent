@@ -53,6 +53,7 @@ class OrderManager:
 
     def __init__(self, ib_client: Any, config: dict, dry_run: bool = False, mock: bool = False):
         self.ib = ib_client.ib if hasattr(ib_client, "ib") else ib_client
+        self._account = getattr(ib_client, "account", "") or ""
         self.config = config
         self.dry_run = dry_run
         self.mock = mock
@@ -93,6 +94,8 @@ class OrderManager:
                 contract = option_spec_to_contract(spec)
                 # Use market for paper testing to simplify; can switch to limit with offset
                 order = MarketOrder(action, qty)
+                if self._account:
+                    order.account = self._account
                 trade = self.ib.placeOrder(contract, order)
                 orders_placed.append(trade)
                 leg_id = f"leg_{i}_{spec.right}_{spec.strike}_{spec.expiry}"
@@ -155,6 +158,8 @@ class OrderManager:
                 action = "SELL" if leg.get("side") == "BUY" else "BUY"
                 qty = int(leg.get("quantity", 1))
                 order = MarketOrder(action, qty)
+                if self._account:
+                    order.account = self._account
                 self.ib.placeOrder(c, order)
                 time.sleep(0.2)
             return True, ""

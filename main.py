@@ -70,10 +70,45 @@ def main() -> None:
         if not ib_client.connect():
             logger.error("Failed to connect to IBKR; exiting")
             sys.exit(1)
+        # Log account details so you can verify you are on the right (paper) account
+        port = ib_client.port
+        account_type = "PAPER" if port == 4002 else ("LIVE" if port == 4001 else "custom")
+        logger.info("Session: port=%s (%s trading)", port, account_type)
+        configured_account = os.getenv("IBKR_ACCOUNT", "").strip()
+        session_accounts = ib_client.get_session_accounts()
+        if configured_account:
+            logger.info("Configured account (IBKR_ACCOUNT): %s — orders will be sent to this account", configured_account)
+        else:
+            if session_accounts:
+                logger.info("Configured account (IBKR_ACCOUNT): not set — orders will use this session's account: %s (your %s account)",
+                            session_accounts[0], account_type.lower())
+            else:
+                logger.info("Configured account (IBKR_ACCOUNT): not set — orders will use broker default for this %s session", account_type.lower())
+        if session_accounts:
+            logger.info("Broker session account(s) for this connection: %s", session_accounts)
+            # If no IBKR_ACCOUNT set, use this session's (paper) account so orders go there explicitly
+            if not os.getenv("IBKR_ACCOUNT", "").strip():
+                ib_client.account = session_accounts[0]
+                logger.info("Using session account for orders: %s", session_accounts[0])
+        # Log current positions on this account
+        display_account = configured_account or (session_accounts[0] if session_accounts else "")
+        positions = ib_client.get_positions()
+        logger.info("Positions for account %s:", display_account or "(default)")
+        if positions:
+            logger.info("  %d position(s):", len(positions))
+            for p in positions:
+                logger.info("    position=%s avgCost=%s contract=%s", p.get("position"), p.get("avgCost"), p.get("contract", "").strip() or "(n/a)")
+        else:
+            logger.info("  (none)")
     else:
         logger.info("MOCK mode: no broker connection")
 
     poll_interval = config.get("pnl_poll_interval_seconds", 30)
+    _entry = os.getenv("ENTRY_TIME", "").strip() or config.get("entry_time", "09:45")
+    _offset = config.get("entry_offset_minutes", 2)
+    _tz = config.get("timezone", "America/Chicago")
+    logger.info("Agent running. Polling every %ds for entry window %s ± %d min (%s). You will see 'Entry check: market time ...' each cycle. Stop with Ctrl+C.",
+                poll_interval, _entry, _offset, _tz)
     reconnect_interval = 60
     last_reconnect = 0.0
 

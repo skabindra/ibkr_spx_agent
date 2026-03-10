@@ -62,11 +62,26 @@ class IBKRClient:
             return False
         try:
             self._ib.connect(self.host, self.port, clientId=self.client_id)
-            self._log_info("Connected to IBKR", "host=%s port=%s", self.host, self.port)
+            self._log_info("Connected to IBKR host=%s port=%s", self.host, self.port)
             return True
         except Exception as e:
             self._log_error("Connect failed: %s", e)
             return False
+
+    def get_session_accounts(self) -> List[str]:
+        """Return list of account IDs available in this session (from TWS/Gateway)."""
+        if not self._ib.isConnected():
+            return []
+        try:
+            # ib_insync: managedAccounts is set after connect (comma-separated string or list)
+            accounts = getattr(self._ib, "managedAccounts", None)
+            if accounts is None:
+                return []
+            if isinstance(accounts, str):
+                return [a.strip() for a in accounts.split(",") if a.strip()]
+            return list(accounts) if accounts else []
+        except Exception:
+            return []
 
     def disconnect(self) -> None:
         self._ib.disconnect()
@@ -99,6 +114,35 @@ class IBKRClient:
         values = self._ib.accountSummary(self.client_id)
         self._ib.cancelAccountSummary(self.client_id, "All", "NetLiquidation")
         return list(values)
+
+    def get_positions(self) -> List[dict]:
+        """Return current positions for the configured account. Each item: symbol, secType, position, avgCost, contract description."""
+        if not self._ib.isConnected():
+            return []
+        try:
+            self._ib.reqPositions()
+            self._ib.sleep(2)
+            out = []
+            for p in self._ib.positions():
+                acct = (getattr(p, "account", "") or "").strip()
+                if self.account and acct.upper() != (self.account or "").strip().upper():
+                    continue
+                c = getattr(p, "contract", None)
+                pos = getattr(p, "position", 0) or 0
+                avg = getattr(p, "avgCost", 0) or 0
+                desc = ""
+                if c:
+                    sym = getattr(c, "symbol", "") or ""
+                    sec = getattr(c, "secType", "") or ""
+                    strike = getattr(c, "strike", "") or ""
+                    right = getattr(c, "right", "") or ""
+                    exp = getattr(c, "lastTradeDateOrContractMonth", "") or ""
+                    desc = f"{sym} {sec} {strike} {right} {exp}".strip()
+                out.append({"account": acct, "position": pos, "avgCost": avg, "contract": desc})
+            return out
+        except Exception as e:
+            self._log_error("Get positions failed: %s", e)
+            return []
 
     def net_liquidation(self) -> Optional[float]:
         """Current net liquidation value for configured account."""
