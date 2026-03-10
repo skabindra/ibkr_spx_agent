@@ -5,8 +5,8 @@ underlying: SPX
 timezone: America/New_York
 
 # Entry/exit time windows
-entry_time: "09:45"
-exit_time: "09:45"
+entry_time: "09:20"
+exit_time: "09:20"
 entry_offset_minutes: 2
 exit_offset_minutes: 2
 trade_day: Friday  # Monday, Tuesday, Wednesday, Thursday, Friday
