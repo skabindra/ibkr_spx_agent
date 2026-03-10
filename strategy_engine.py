@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from blackout_days import is_blackout
-from contract_selector import ChainContract, ContractSelector, OptionSpec
+from contract_selector import ChainContract, ContractSelector, OptionSpec, get_expiration_near_dte
 from ibkr_client import IBKRClient
 from order_manager import OrderManager
 from pnl_monitor import PnLMonitor
@@ -25,12 +25,14 @@ class StrategyEngine:
         state_store: Optional[StateStore] = None,
         dry_run: bool = False,
         mock: bool = False,
+        strategy_name: str = "SPX-DC",
     ):
         self.config = config or load_config()
         self.ib_client = ib_client
         self.state_store = state_store or StateStore()
         self.dry_run = dry_run
         self.mock = mock
+        self.strategy_name = (strategy_name or self.config.get("default_strategy") or "SPX-DC").strip().upper()
 
         self.risk = RiskManager(self.config, self.state_store)
         self.selector = ContractSelector(self.config)
@@ -63,16 +65,33 @@ class StrategyEngine:
     def _today_str(self) -> str:
         return current_market_time(self.config).date().isoformat()
 
-    def _get_chain_from_broker(self, trade_date: date, expirations: List[str]) -> Tuple[Dict[str, List[ChainContract]], float]:
-        """Fetch option chain and spot from IB. Returns (chain_by_expiry, spot)."""
+    def _get_leg_names(self) -> List[str]:
+        """Return leg names for the current strategy."""
+        strategies = self.config.get("strategies") or {}
+        s = strategies.get(self.strategy_name) or strategies.get("SPX-DC") or {}
+        legs = s.get("legs") or ["short_put", "long_put", "short_call", "long_call"]
+        return list(legs)
+
+    def _get_chain_from_broker(
+        self,
+        trade_date: date,
+        expirations: List[str],
+        leg_names: Optional[List[str]] = None,
+        needed_expirations: Optional[set] = None,
+    ) -> Tuple[Dict[str, List[ChainContract]], float]:
+        """Fetch option chain and spot from IB. Returns (chain_by_expiry, spot). needed_expirations if set is set of expiry norms to fetch (e.g. from nearest-DTE fallback)."""
+        leg_names = leg_names or self._get_leg_names()
         spot = self.ib_client.get_spx_spot() or 0.0
         chain_by_expiry: Dict[str, List[ChainContract]] = {}
-        needed = set()
-        for leg_name in ["short_put", "long_put", "short_call", "long_call"]:
-            leg_cfg = self.config.get(leg_name) or {}
-            dte = leg_cfg.get("dte", 6)
-            target_exp = (trade_date + timedelta(days=dte)).strftime("%Y%m%d")
-            needed.add(target_exp)
+        if needed_expirations is not None:
+            needed = set(needed_expirations)
+        else:
+            needed = set()
+            for leg_name in leg_names:
+                leg_cfg = self.config.get(leg_name) or {}
+                dte = leg_cfg.get("dte", 6)
+                target_exp = (trade_date + timedelta(days=dte)).strftime("%Y%m%d")
+                needed.add(target_exp)
         for exp in expirations:
             norm = exp.replace("-", "")[:8]
             if norm not in needed:
@@ -91,12 +110,14 @@ class StrategyEngine:
             ]
         return chain_by_expiry, spot
 
-    def _get_mock_chain(self, trade_date: date, spot: float) -> Tuple[List[str], Dict[str, List[ChainContract]]]:
+    def _get_mock_chain(self, trade_date: date, spot: float, leg_names: Optional[List[str]] = None) -> Tuple[List[str], Dict[str, List[ChainContract]]]:
         """Mock expirations and chain for testing without broker."""
-        exp6 = (trade_date + timedelta(days=6)).strftime("%Y%m%d")
-        exp7 = (trade_date + timedelta(days=7)).strftime("%Y%m%d")
-        expirations = [exp6, exp7]
-        # Stub strikes around spot; 20-delta put/call roughly 2% away
+        leg_names = leg_names or self._get_leg_names()
+        dtes = set()
+        for name in leg_names:
+            leg_cfg = self.config.get(name) or {}
+            dtes.add(leg_cfg.get("dte", 5))
+        expirations = [(trade_date + timedelta(days=d)).strftime("%Y%m%d") for d in sorted(dtes)]
         import math
         spacing = 5.0
         low = math.floor((spot * 0.98) / spacing) * spacing
@@ -106,15 +127,13 @@ class StrategyEngine:
         while s <= high:
             strikes.append(s)
             s += spacing
-        chain6 = []
-        chain7 = []
-        for st in strikes:
-            # Put delta negative, call delta positive; 20 delta ~ 0.20
-            chain6.append(ChainContract(strike=st, right="P", expiry=exp6, delta=-0.20 + (spot - st) / 500))
-            chain6.append(ChainContract(strike=st, right="C", expiry=exp6, delta=0.20 + (st - spot) / 500))
-            chain7.append(ChainContract(strike=st, right="P", expiry=exp7, delta=-0.15 + (spot - st) / 500))
-            chain7.append(ChainContract(strike=st, right="C", expiry=exp7, delta=0.15 + (st - spot) / 500))
-        chain_by_expiry = {exp6: chain6, exp7: chain7}
+        chain_by_expiry: Dict[str, List[ChainContract]] = {}
+        for exp in expirations:
+            chain = []
+            for st in strikes:
+                chain.append(ChainContract(strike=st, right="P", expiry=exp, delta=-0.20 + (spot - st) / 500))
+                chain.append(ChainContract(strike=st, right="C", expiry=exp, delta=0.20 + (st - spot) / 500))
+            chain_by_expiry[exp] = chain
         return expirations, chain_by_expiry
 
     def run_entry_checks(self) -> None:
@@ -160,9 +179,12 @@ class StrategyEngine:
         state = self.state_store.get_state()
         day = state.get_day(date_str)
 
+        leg_names = self._get_leg_names()
+        self._log("Strategy %s: legs %s", self.strategy_name, leg_names)
+
         if self.mock or self.dry_run:
             spot = 5800.0  # mock
-            expirations, chain_by_expiry = self._get_mock_chain(trade_date, spot)
+            expirations, chain_by_expiry = self._get_mock_chain(trade_date, spot, leg_names)
         else:
             if not self.ib_client or not self.ib_client.is_connected():
                 self._log("IB not connected; skipping entry")
@@ -171,28 +193,40 @@ class StrategyEngine:
             if not expirations:
                 self._log("Contract selection failed: no SPX expirations from broker")
                 return
-            exp6 = (trade_date + timedelta(days=self.config.get("short_put", {}).get("dte", 6))).strftime("%Y%m%d")
-            exp7 = (trade_date + timedelta(days=self.config.get("long_put", {}).get("dte", 7))).strftime("%Y%m%d")
-            if exp6 not in [ex.replace("-", "")[:8] for ex in expirations]:
-                self._log("Contract selection failed: no 6-DTE expiry %s in broker list (SPX may not list that date)", exp6)
-                return
-            if exp7 not in [ex.replace("-", "")[:8] for ex in expirations]:
-                self._log("Contract selection failed: no 7-DTE expiry %s in broker list (SPX may not list that date)", exp7)
-                return
-            chain_by_expiry, spot = self._get_chain_from_broker(trade_date, expirations)
-            needed = {(trade_date + timedelta(days=self.config.get("short_put", {}).get("dte", 6))).strftime("%Y%m%d"),
-                     (trade_date + timedelta(days=self.config.get("long_put", {}).get("dte", 7))).strftime("%Y%m%d")}
-            for exp in needed:
+            exp_norm = {ex.replace("-", "")[:8] for ex in expirations}
+            needed = set()
+            for name in leg_names:
+                leg_cfg = self.config.get(name) or {}
+                dte = leg_cfg.get("dte", 5)
+                need_exp = (trade_date + timedelta(days=dte)).strftime("%Y%m%d")
+                if need_exp in exp_norm:
+                    needed.add(need_exp)
+                else:
+                    nearest = get_expiration_near_dte(expirations, trade_date, dte)
+                    if nearest:
+                        norm = nearest.replace("-", "")[:8]
+                        needed.add(norm)
+                        self._log("Using nearest expiry %s for leg %s (wanted %d DTE)", norm, name, dte)
+                    else:
+                        self._log("Contract selection failed: no expiry near %d DTE for leg %s", dte, name)
+                        return
+            chain_by_expiry, spot = self._get_chain_from_broker(trade_date, expirations, leg_names, needed_expirations=needed)
+            for name in leg_names:
+                leg_cfg = self.config.get(name) or {}
+                dte = leg_cfg.get("dte", 5)
+                exp = (trade_date + timedelta(days=dte)).strftime("%Y%m%d")
                 n = len(chain_by_expiry.get(exp.replace("-", "")[:8], []))
-                self._log("Chain for expiry %s: %d contracts", exp, n)
+                self._log("Chain for expiry %s (%s): %d contracts", exp, name, n)
             if spot <= 0:
                 self._log("Contract selection failed: no SPX spot price")
                 return
 
-        sp, lp, sc, lc = self.selector.select_legs(trade_date, spot, expirations, chain_by_expiry)
-        if not all([sp, lp, sc, lc]):
-            self._log("Contract selection failed; aborting entry (short_put=%s long_put=%s short_call=%s long_call=%s)",
-                     sp is not None, lp is not None, sc is not None, lc is not None)
+        specs = self.selector.select_legs_for_strategy(leg_names, trade_date, spot, expirations, chain_by_expiry)
+        if not all(specs):
+            for name, spec in zip(leg_names, specs):
+                if spec is None:
+                    self._log("Contract selection failed: leg %s returned no contract", name)
+            self._log("Contract selection failed; aborting entry")
             return
 
         # Position size: 5% of portfolio, default 1 lot
@@ -201,25 +235,28 @@ class StrategyEngine:
             nl = self.ib_client.net_liquidation()
             if nl and nl > 0:
                 alloc_pct = self.config.get("allocate_pct", 0.05)
-                # Simplified: assume one combo costs ~X; use 5% of NL to cap size
-                # Default 1 lot; could compute from option prices
                 size = max(1, int(nl * alloc_pct / 50000) or 1)
                 size = min(size, 10)  # safeguard
         self._log("Position size: %d", size)
 
-        legs_config = [
-            (sp, self.config.get("short_put", {}).get("qty", 1) * size, "SELL"),
-            (lp, self.config.get("long_put", {}).get("qty", 1) * size, "BUY"),
-            (sc, self.config.get("short_call", {}).get("qty", 1) * size, "SELL"),
-            (lc, self.config.get("long_call", {}).get("qty", 1) * size, "BUY"),
-        ]
-        # Build leg details for exit: strike, right, expiry, side
-        leg_details = [
-            {"leg_id": "short_put", "strike": sp.strike, "right": "P", "expiry": sp.expiry, "side": "SELL", "quantity": legs_config[0][1]},
-            {"leg_id": "long_put", "strike": lp.strike, "right": "P", "expiry": lp.expiry, "side": "BUY", "quantity": legs_config[1][1]},
-            {"leg_id": "short_call", "strike": sc.strike, "right": "C", "expiry": sc.expiry, "side": "SELL", "quantity": legs_config[2][1]},
-            {"leg_id": "long_call", "strike": lc.strike, "right": "C", "expiry": lc.expiry, "side": "BUY", "quantity": legs_config[3][1]},
-        ]
+        legs_config = []
+        leg_details = []
+        for i, (name, spec) in enumerate(zip(leg_names, specs)):
+            if spec is None:
+                continue
+            leg_cfg = self.config.get(name) or {}
+            qty = leg_cfg.get("qty", 1) * size
+            side = (leg_cfg.get("side") or "BUY").strip().upper()
+            legs_config.append((spec, qty, side))
+            leg_details.append({
+                "leg_id": name,
+                "strike": spec.strike,
+                "right": spec.right,
+                "expiry": spec.expiry,
+                "side": side,
+                "quantity": qty,
+            })
+        self._log("Placing order: %d leg(s)", len(legs_config))
         om = self._ensure_order_manager()
         success, records, err = om.place_combo(legs_config)
 

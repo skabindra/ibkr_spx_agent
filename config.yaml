@@ -4,9 +4,12 @@
 underlying: SPX
 timezone: America/Chicago
 
-# Entry/exit time windows (11:05 = 11:05 AM CT)
-entry_time: "11:05"
-exit_time: "11:05"
+# Strategy selection: SPX-DC (4-leg) or SPX-CALL (single long call). Set STRATEGY=SPX-CALL or prompt at start.
+default_strategy: SPX-DC
+
+# Entry/exit time windows (12:00 = noon CT — window 11:58–12:02)
+entry_time: "12:00"
+exit_time: "12:00"
 entry_offset_minutes: 2
 exit_offset_minutes: 2
 trade_day: Friday  # Monday, Tuesday, Wednesday, Thursday, Friday
@@ -26,7 +29,16 @@ use_blackout_days: true
 # PnL monitoring
 pnl_poll_interval_seconds: 30
 
-# Leg definitions (4-leg structure)
+# Strategies (choose via STRATEGY= env or prompt at start)
+strategies:
+  SPX-DC:
+    description: "4-leg: short 20Δ 6 DTE put/call, long ATM 7 DTE put/call"
+    legs: [short_put, long_put, short_call, long_call]
+  SPX-CALL:
+    description: "Single long 20 delta 5 DTE call"
+    legs: [long_call_5dte]
+
+# Leg definitions (SPX-DC: 4-leg structure)
 short_put:
   side: SELL
   qty: 1
@@ -54,6 +66,14 @@ long_call:
   option_type: CALL
   strike_offset: 0
   dte: 7
+
+# SPX-CALL: single leg
+long_call_5dte:
+  side: BUY
+  qty: 1
+  option_type: CALL
+  delta_target: 20
+  dte: 5
 
 # Blackout dates (manual list; skip trading on these days)
 # Format: YYYY-MM-DD. Future: macro-event blackout support can be added.

@@ -3,6 +3,7 @@ Time-based scheduling: entry/exit windows with configurable target time and offs
 Timezone-aware; triggers only on configured trade day (e.g. Friday).
 """
 
+import os
 from datetime import date, datetime, time, timedelta
 from typing import Optional, Tuple
 import zoneinfo
@@ -44,7 +45,16 @@ def in_time_window(
 
 
 def is_trade_day(day: date, config: Optional[dict] = None) -> bool:
-    """Return True if day is the configured trade day (e.g. Friday)."""
+    """Return True if day is the configured trade day. Respects ALLOW_ANY_DAY=1 and TRADE_DAY= env."""
+    if os.getenv("ALLOW_ANY_DAY", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    env_day = os.getenv("TRADE_DAY", "").strip()
+    if env_day:
+        try:
+            want = weekday_name_to_number(env_day)
+            return day.weekday() == want
+        except ValueError:
+            pass
     cfg = config or load_config()
     name = cfg.get("trade_day", "Friday")
     want = weekday_name_to_number(name)
@@ -70,9 +80,10 @@ def current_market_time(config: Optional[dict] = None) -> datetime:
 def in_entry_window(config: Optional[dict] = None) -> bool:
     now = current_market_time(config)
     cfg = config or load_config()
+    entry_time_str = os.getenv("ENTRY_TIME", "").strip() or cfg.get("entry_time", "09:45")
     return in_time_window(
         now,
-        cfg.get("entry_time", "09:45"),
+        entry_time_str,
         cfg.get("entry_offset_minutes", 2),
         config=cfg,
     )

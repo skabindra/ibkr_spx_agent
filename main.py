@@ -45,6 +45,19 @@ def main() -> None:
 
     state_store = StateStore()
     state_store.load()
+    if os.getenv("RESET_ENTRY_TODAY", "").strip().lower() in ("1", "true", "yes"):
+        from scheduler import current_market_time
+        _today_str = current_market_time(config).date().isoformat()
+        _s = state_store.get_state()
+        _d = _s.get_day(_today_str)
+        _d.entry_attempted = False
+        _d.entry_filled = False
+        _d.position = None
+        _d.exit_sent = False
+        _d.exit_filled = False
+        _s.set_day(_today_str, _d)
+        state_store.save(_s)
+        logger.info("RESET_ENTRY_TODAY=1: cleared today's entry state so you can retry")
 
     ib_client = IBKRClient(allow_live=allow_live)
     ib_client.set_logger(logger)
@@ -53,12 +66,33 @@ def main() -> None:
     risk.set_allow_live(allow_live)
     risk.set_logger(logger)
 
+    # Strategy selection: env STRATEGY=SPX-DC or SPX-CALL; else prompt if TTY
+    strategy_name = os.getenv("STRATEGY", "").strip().upper()
+    if strategy_name not in ("SPX-DC", "SPX-CALL"):
+        if sys.stdin.isatty():
+            try:
+                print("Select strategy: 1=SPX-DC (4-leg), 2=SPX-CALL (single 20Δ 5 DTE call)")
+                choice = input("Choice [1]: ").strip() or "1"
+                strategy_name = "SPX-CALL" if choice == "2" else "SPX-DC"
+            except (EOFError, KeyboardInterrupt):
+                strategy_name = config.get("default_strategy", "SPX-DC")
+        else:
+            strategy_name = (config.get("default_strategy") or "SPX-DC").strip().upper()
+    logger.info("Strategy: %s", strategy_name)
+    _allow_any = os.getenv("ALLOW_ANY_DAY", "").strip().lower() in ("1", "true", "yes")
+    if _allow_any:
+        logger.info("ALLOW_ANY_DAY=1: trade day = any day")
+    _trade_day_env = os.getenv("TRADE_DAY", "").strip()
+    if _trade_day_env:
+        logger.info("TRADE_DAY=%s (today must match to enter)", _trade_day_env)
+
     engine = StrategyEngine(
         config=config,
         ib_client=ib_client if not MOCK else None,
         state_store=state_store,
         dry_run=DRY_RUN,
         mock=MOCK,
+        strategy_name=strategy_name,
     )
     engine.set_logger(logger)
 
@@ -128,6 +162,16 @@ def main() -> None:
                     time.sleep(5)
                     continue
 
+            # Log every cycle so you see activity; then run entry/exit checks
+            from scheduler import current_market_time, in_entry_window, is_trade_day
+            _today = current_market_time(config).date()
+            _date_str = _today.isoformat()
+            _day = state_store.get_state().get_day(_date_str)
+            _tm = current_market_time(config).strftime("%H:%M")
+            _trade_day = is_trade_day(_today, config)
+            _in_window = in_entry_window(config)
+            logger.info("Polling: time=%s (%s) | trade_day=%s | in_entry_window=%s | entry_attempted=%s",
+                        _tm, config.get("timezone", "America/Chicago"), _trade_day, _in_window, _day.entry_attempted)
             # Entry checks (Friday, entry window, blackout, risk)
             engine.run_entry_checks()
 

@@ -54,6 +54,31 @@ def get_expiration_for_dte(expirations: List[str], trade_date: date, dte: int) -
     return None
 
 
+def get_expiration_near_dte(expirations: List[str], trade_date: date, dte: int) -> Optional[str]:
+    """
+    When exact DTE is not listed (e.g. SPX has Mon/Wed/Fri only), return the expiration
+    whose DTE is closest to the target. Helps strategies like SPX-CALL (5 DTE) when 5 DTE is not available.
+    """
+    if not expirations:
+        return None
+    best_ex = None
+    best_diff = 9999
+    for ex in expirations:
+        norm = ex.replace("-", "")[:8]
+        if len(norm) < 8:
+            continue
+        try:
+            exp_date = date(int(norm[:4]), int(norm[4:6]), int(norm[6:8]))
+            actual_dte = (exp_date - trade_date).days
+            diff = abs(actual_dte - dte)
+            if diff < best_diff:
+                best_diff = diff
+                best_ex = ex
+        except (ValueError, TypeError):
+            continue
+    return best_ex
+
+
 def select_by_delta(
     contracts: List[ChainContract],
     target_delta: float,
@@ -201,3 +226,39 @@ class ContractSelector:
             con_id=c.con_id,
             local_symbol=c.local_symbol,
         )
+
+    def select_legs_for_strategy(
+        self,
+        leg_names: List[str],
+        trade_date: date,
+        spot: float,
+        expirations: List[str],
+        chain_by_expiry: Dict[str, List[ChainContract]],
+    ) -> List[Optional[OptionSpec]]:
+        """
+        Select one OptionSpec per leg name. Returns list in same order as leg_names; None if selection fails for that leg.
+        """
+        result = []
+        for name in leg_names:
+            leg_cfg = self.config.get(name) or {}
+            dte = leg_cfg.get("dte", 5)
+            exp = get_expiration_for_dte(expirations, trade_date, dte)
+            if not exp:
+                exp = get_expiration_near_dte(expirations, trade_date, dte)
+            if not exp:
+                result.append(None)
+                continue
+            norm = exp.replace("-", "")[:8]
+            chain = chain_by_expiry.get(norm) or []
+            right = "C" if (leg_cfg.get("option_type") or "CALL").upper().startswith("C") else "P"
+            spec = None
+            if "delta_target" in leg_cfg:
+                c = select_by_delta(chain, leg_cfg.get("delta_target", 20), right)
+                spec = self._to_spec(c) if c else None
+            else:
+                c = select_by_strike_offset(
+                    chain, spot, leg_cfg.get("strike_offset", 0), right
+                )
+                spec = self._to_spec(c) if c else None
+            result.append(spec)
+        return result
