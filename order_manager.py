@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from contract_selector import OptionSpec
-from ib_insync import LimitOrder, MarketOrder, Order, Trade
+from ib_insync import Contract, LimitOrder, MarketOrder, Order, Trade
 
 
 @dataclass
@@ -166,6 +166,81 @@ class OrderManager:
         except Exception as e:
             self._log_error("Close orders failed: %s", e)
             return False, str(e)
+
+    def buy_stock_at_market(
+        self,
+        symbol: str,
+        quantity: int,
+        exchange: str = "SMART",
+        currency: str = "USD",
+    ) -> Tuple[bool, Optional[OrderRecord], Optional[str]]:
+        """
+        Place a market BUY order for a stock.
+
+        Args:
+            symbol: Ticker symbol (e.g. AAPL, MSFT).
+            quantity: Number of shares to buy.
+            exchange: Exchange (default SMART for US stocks).
+            currency: Currency (default USD).
+
+        Returns:
+            (success, order_record, error_message). order_record has fill_price if filled.
+        """
+        if self.dry_run or self.mock:
+            self._log("DRY-RUN/MOCK: would buy %d shares of %s at market", quantity, symbol)
+            return True, None, None
+
+        if not self.ib.isConnected():
+            return False, None, "Not connected to IB"
+
+        if quantity <= 0:
+            return False, None, "Quantity must be positive"
+
+        c = Contract()
+        c.symbol = symbol
+        c.secType = "STK"
+        c.exchange = exchange
+        c.currency = currency
+
+        try:
+            order = MarketOrder("BUY", quantity)
+            order.tif = "DAY"  # Match IBKR order preset; avoids Error 10349
+            if self._account:
+                order.account = self._account
+            trade = self.ib.placeOrder(c, order)
+            record = OrderRecord(order_id=trade.order.orderId, leg_id=f"stock_{symbol}", status="Submitted")
+
+            # Wait for terminal state (with timeout)
+            timeout = 30
+            start = time.time()
+            while time.time() - start < timeout:
+                st = trade.orderStatus.status
+                if st in ("Filled", "Cancelled", "ApiCancelled", "Inactive"):
+                    record.status = st
+                    if st == "Filled" and trade.orderStatus.avgFillPrice:
+                        record.fill_price = float(trade.orderStatus.avgFillPrice)
+                        record.filled = float(trade.orderStatus.filled)
+                    break
+                self.ib.sleep(0.5)
+
+            # Re-read status once so we report actual outcome (e.g. Cancelled) not "Submitted" after timeout
+            record.status = trade.orderStatus.status
+            if record.status == "Filled" and trade.orderStatus.avgFillPrice:
+                record.fill_price = float(trade.orderStatus.avgFillPrice)
+                record.filled = float(trade.orderStatus.filled)
+
+            self._records.append(record)
+            # Order placed successfully if not cancelled/rejected (PreSubmitted/Submitted mean live on IBKR, may fill later)
+            success = record.status not in ("Cancelled", "ApiCancelled", "Inactive")
+            err_msg = None if success else f"Order ended with status {record.status}"
+            if not success and trade.log:
+                last = trade.log[-1]
+                if getattr(last, "message", None) or getattr(last, "errorCode", 0):
+                    err_msg = (err_msg or "") + (" — " + (last.message or f"Error {last.errorCode}"))
+            return success, record, None if success else (err_msg.strip() if err_msg else None)
+        except Exception as e:
+            self._log_error("Buy stock at market failed for %s: %s", symbol, e)
+            return False, None, str(e)
 
     def get_records(self) -> List[OrderRecord]:
         return list(self._records)

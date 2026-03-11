@@ -120,6 +120,39 @@ The bot will connect (unless in mock), evaluate Fridays, entry/exit windows, and
   1. **Scheduled exit:** Same idea: target time (e.g. 9:45 AM) ± `exit_offset_minutes`. If the position is still open at that window, the bot sends the exit.
   2. **Early exit:** When the profit target is reached and (if enabled) confirmed by two consecutive price checks.
 - All times use the config `timezone` (e.g. `America/New_York`).
+- **Overrides (env):** You can override the entry time with `ENTRY_TIME=14:58` (window then 14:56–15:00 with ±2 min). Use `ALLOW_ANY_DAY=1` to treat any day as a trade day. Use `RESET_ENTRY_TODAY=1` once to clear today’s entry state so the bot can retry entry the same day.
+
+---
+
+## Get Ticker Price
+
+To fetch the current price of a ticker (e.g. for a stock or index) without running the full agent:
+
+```bash
+python get_price.py [SYMBOL]
+# Default symbol: AAPL
+python get_price.py AAPL
+python get_price.py MSFT
+```
+
+Requires TWS or IB Gateway running with API enabled. The underlying API is `IBKRClient.get_ticker_price(symbol, sec_type="STK", exchange="SMART", currency="USD")`; for indices use e.g. `get_ticker_price("SPX", sec_type="IND", exchange="CBOE")`.
+
+---
+
+## Buy Stock at Market
+
+To place a **market BUY** order for a stock and then disconnect:
+
+```bash
+python buy_stock.py SYMBOL QUANTITY
+# Examples:
+python buy_stock.py AAPL 10
+python buy_stock.py MSFT 5
+```
+
+- Requires TWS or IB Gateway (paper port, e.g. 4002). Orders use time-in-force **DAY** to match IBKR presets.
+- **DRY_RUN:** `DRY_RUN=1 python buy_stock.py AAPL 10` simulates the order without sending it.
+- **Success:** The script treats **Filled**, **PreSubmitted**, and **Submitted** as success (order placed). Only **Cancelled** / **ApiCancelled** / **Inactive** are reported as failure. If the order is still pending (PreSubmitted/Submitted), check TWS for fill status.
 
 ---
 
@@ -165,15 +198,17 @@ Example log output:
 ## Project Layout
 
 - `main.py` — Entry point; connection, loop, reconnect, PnL polling.
+- `get_price.py` — One-off script to fetch and print a ticker’s price (e.g. `python get_price.py AAPL`).
+- `buy_stock.py` — One-off script to place a market BUY order (e.g. `python buy_stock.py AAPL 10`).
 - `config.yaml` — Strategy and risk parameters, leg definitions, blackout list.
 - `.env.example` / `.env` — Broker and safety settings.
-- `ibkr_client.py` — IB connection, paper check, expirations and option chain.
+- `ibkr_client.py` — IB connection, paper check, expirations, option chain, `get_ticker_price()`, `get_spx_spot()`.
 - `strategy_engine.py` — Entry/exit orchestration, contract selection, order and state updates.
 - `contract_selector.py` — DTE/expiration, delta and strike-offset selection.
-- `order_manager.py` — Place combo/legs, track orders and fills.
+- `order_manager.py` — Place combo/legs and stock market orders, track orders and fills (`buy_stock_at_market()`).
 - `risk_manager.py` — Paper-only, kill switch, one entry per day, max positions.
 - `pnl_monitor.py` — P&L polling and two-price profit target logic.
-- `scheduler.py` — Trade day and entry/exit time windows.
+- `scheduler.py` — Trade day and entry/exit time windows (respects `ENTRY_TIME` env).
 - `blackout_days.py` — Blackout date handling.
 - `state_store.py` — Persistent state (JSON).
 - `logger.py` / `utils.py` — Logging and config helpers.

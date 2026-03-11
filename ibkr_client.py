@@ -164,11 +164,35 @@ class IBKRClient:
 
     def get_spx_spot(self) -> Optional[float]:
         """Request SPX index quote; return last price."""
+        return self.get_ticker_price("SPX", sec_type="IND", exchange="CBOE")
+
+    def get_ticker_price(
+        self,
+        symbol: str,
+        sec_type: str = "STK",
+        exchange: str = "SMART",
+        currency: str = "USD",
+    ) -> Optional[float]:
+        """
+        Request market data for the given ticker; return last price (or close).
+
+        Args:
+            symbol: Ticker symbol (e.g. AAPL, SPX).
+            sec_type: Security type: STK (stock), IND (index), etc.
+            exchange: Exchange (SMART for stocks, CBOE for SPX, etc.).
+            currency: Currency code (default USD).
+
+        Returns:
+            Last price, or close if last unavailable; None on error or no data.
+        """
+        if not self._ib.isConnected():
+            self._log_error("Not connected; cannot get quote for %s", symbol)
+            return None
         c = Contract()
-        c.symbol = "SPX"
-        c.secType = "IND"
-        c.exchange = "CBOE"
-        c.currency = "USD"
+        c.symbol = symbol
+        c.secType = sec_type
+        c.exchange = exchange
+        c.currency = currency
         try:
             ticker = self._ib.reqMktData(c, "", False, False)
             self._ib.sleep(2)
@@ -176,7 +200,7 @@ class IBKRClient:
             self._ib.cancelMktData(c)
             return float(price) if price is not None else None
         except Exception as e:
-            self._log_error("SPX quote failed: %s", e)
+            self._log_error("Quote failed for %s: %s", symbol, e)
             return None
 
     def get_spx_expirations(self) -> List[str]:
